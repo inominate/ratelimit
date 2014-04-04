@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-// ErrTimeout indicated a timeout when attempting to begin a task.
+// ErrTimeout indicates a timeout when attempting to begin a task with Start()
 var ErrTimeout = errors.New("timeout waiting for clearance to continue")
 
 // ErrAlreadyClosed indicates an attempt to use a closed RateLimit.
