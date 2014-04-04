@@ -62,9 +62,10 @@ func (rl *RateLimit) countEvents() (eventCount int) {
 			delete(rl.events, t)
 		} else {
 			eventCount++
-		}
-		if nextExpire.IsZero() || t.Before(nextExpire) {
-			nextExpire = t
+
+			if nextExpire.IsZero() || t.Before(nextExpire) {
+				nextExpire = t
+			}
 		}
 	}
 
