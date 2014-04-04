@@ -1,4 +1,9 @@
-package errthrot
+/*
+A generic rate limiter.
+
+Limits the rate at which events can complete.
+*/
+package ratelimit
 
 import (
 	"errors"
@@ -11,28 +16,28 @@ import (
 // Set up a logger that can be turned on for debugging.
 var DebugLog = log.New(ioutil.Discard, "", 0)
 
-type ErrThrot struct {
-	maxErrors int
+type RateLimit struct {
+	maxEvents int
 	period    time.Duration
 
-	expireErrors <-chan time.Time
-	errors       map[time.Time]struct{}
+	expireEvents <-chan time.Time
+	events       map[time.Time]struct{}
 
-	start  chan bool
-	finish chan error
+	start  chan struct{}
+	finish chan bool
 	close  chan chan error
 }
 
-/* countErrors should only ever called by run, dangerous if used elsewhere. */
-func (e *ErrThrot) countErrors() (errorCount int) {
+/* countEvents should only ever called by run, dangerous if used elsewhere. */
+func (e *RateLimit) countEvents() (eventCount int) {
 	var nextExpire time.Time
 	now := time.Now()
 
-	for t := range e.errors {
+	for t := range e.events {
 		if t.Before(now) {
-			delete(e.errors, t)
+			delete(e.events, t)
 		} else {
-			errorCount++
+			eventCount++
 		}
 		if nextExpire.IsZero() || t.Before(nextExpire) {
 			nextExpire = t
@@ -40,58 +45,58 @@ func (e *ErrThrot) countErrors() (errorCount int) {
 	}
 
 	if nextExpire.IsZero() {
-		e.expireErrors = nil
+		e.expireEvents = nil
 	} else {
-		e.expireErrors = time.After(nextExpire.Sub(now))
+		e.expireEvents = time.After(nextExpire.Sub(now))
 	}
 	return
 }
 
-/* addError should only ever called by run, dangerous if used elsewhere. */
-func (e *ErrThrot) addError() {
-	e.errors[time.Now().Add(e.period)] = struct{}{}
+/* addEvent should only ever called by run, dangerous if used elsewhere. */
+func (e *RateLimit) addEvent() {
+	e.events[time.Now().Add(e.period)] = struct{}{}
 }
 
-func (e *ErrThrot) run() {
+func (e *RateLimit) run() {
 	var count, outstanding int
 	var startChan = e.start
 
 	for {
 		select {
-		case err := <-e.finish:
-			if err == nil {
-				DebugLog.Printf("Item finished with no error.")
+		case skip := <-e.finish:
+			if skip {
+				DebugLog.Printf("Event finished, but going uncounted.")
 			} else {
-				e.addError()
-				count = e.countErrors()
+				e.addEvent()
+				count = e.countEvents()
 
-				DebugLog.Printf("Item finished with error. Current error count is %d.", count)
-				if count >= e.maxErrors {
-					DebugLog.Printf("Error limit reached, blocking start requests.")
-
+				DebugLog.Printf("Event finished, current count is %d.", count)
+				if count >= e.maxEvents {
 					// Stop listening for new start requests.
 					startChan = nil
+
+					DebugLog.Printf("Event limit reached, blocking start requests.")
 				}
 			}
 
 			outstanding--
-			if outstanding+count < e.maxErrors {
-				DebugLog.Printf("Error limit clear, continuing")
+			if outstanding+count < e.maxEvents {
+				DebugLog.Printf("Event limit clear, accepting new start requests.")
 				startChan = e.start
 			}
 
 		case <-startChan:
-			count = e.countErrors()
+			count = e.countEvents()
 
 			outstanding++
 			DebugLog.Printf("New Item Starting, %d outstanding.", outstanding)
-			if outstanding+count == e.maxErrors {
+			if outstanding+count == e.maxEvents {
 				DebugLog.Printf("New requests could break error limit, slowing down.")
 				// Stop listening for start requests causing new ones to block until
 				// some existing tasks finish.
 				startChan = nil
-			} else if outstanding+count > e.maxErrors {
-				log.Printf("New requests have broken error limit, this shouldn't happen. %d+%d (%d) > %d", outstanding, count, outstanding+count, e.maxErrors)
+			} else if outstanding+count > e.maxEvents {
+				log.Printf("New requests have broken error limit, this shouldn't happen. %d+%d (%d) > %d", outstanding, count, outstanding+count, e.maxEvents)
 			}
 
 		case respChan := <-e.close:
@@ -103,7 +108,7 @@ func (e *ErrThrot) run() {
 
 			var err error
 			if outstanding > 0 {
-				err = fmt.Errorf("error closing, %d tasks still outstanding", outstanding)
+				err = fmt.Errorf("error closing, %d events still outstanding", outstanding)
 			}
 
 			respChan <- err
@@ -111,12 +116,12 @@ func (e *ErrThrot) run() {
 			DebugLog.Printf("Worker cleanup complete, shutting down.")
 			return
 
-		case <-e.expireErrors:
-			count = e.countErrors()
-			DebugLog.Printf("expired errors, have %d errors.", count)
+		case <-e.expireEvents:
+			count = e.countEvents()
+			DebugLog.Printf("Expired events, have %d events remaining.", count)
 
-			if outstanding+count < e.maxErrors {
-				DebugLog.Printf("Error limit clear, continuing")
+			if outstanding+count < e.maxEvents {
+				DebugLog.Printf("Event limit clear, continuing")
 				startChan = e.start
 			}
 
@@ -124,16 +129,17 @@ func (e *ErrThrot) run() {
 	}
 }
 
-func NewErrThrot(maxErrors int, period time.Duration) *ErrThrot {
-	var e ErrThrot
-	e.start = make(chan bool)
-	e.finish = make(chan error, maxErrors*2)
+func NewRateLimit(maxEvents int, period time.Duration) *RateLimit {
+	var e RateLimit
+	e.start = make(chan struct{})
+	e.finish = make(chan bool, maxEvents*2)
 	e.close = make(chan chan error)
 
-	e.errors = make(map[time.Time]struct{}, maxErrors)
+	e.events = make(map[time.Time]struct{}, maxEvents)
 
-	e.maxErrors = maxErrors
+	e.maxEvents = maxEvents
 	e.period = period
+
 	go e.run()
 
 	return &e
@@ -142,7 +148,9 @@ func NewErrThrot(maxErrors int, period time.Duration) *ErrThrot {
 var ErrTimeout = errors.New("timeout waiting for clearance to continue")
 var ErrAlreadyClosed = errors.New("already closed")
 
-func (e *ErrThrot) Start(timeout time.Duration) (retErr error) {
+func (e *RateLimit) Start(timeout time.Duration) (retErr error) {
+	// Use recover to avoid panicing the entire program should start be called
+	// on a closed RateLimit.
 	defer func() {
 		if r := recover(); r != nil {
 			e, ok := r.(error)
@@ -167,12 +175,14 @@ func (e *ErrThrot) Start(timeout time.Duration) (retErr error) {
 	case <-timeoutChan:
 		return ErrTimeout
 
-	case e.start <- true:
+	case e.start <- struct{}{}:
 		return nil
 	}
 }
 
-func (e *ErrThrot) Finish(err error) (retErr error) {
+func (e *RateLimit) Finish(skip bool) (retErr error) {
+	// Use recover to avoid panicing the entire program should start be called
+	// on a closed RateLimit.
 	defer func() {
 		if r := recover(); r != nil {
 			e, ok := r.(error)
@@ -190,12 +200,14 @@ func (e *ErrThrot) Finish(err error) (retErr error) {
 		}
 	}()
 
-	e.finish <- err
+	e.finish <- skip
 
 	return nil
 }
 
-func (e *ErrThrot) Close() (retErr error) {
+func (e *RateLimit) Close() (retErr error) {
+	// Use recover to avoid panicing the entire program should start be called
+	// on a closed RateLimit.
 	defer func() {
 		if r := recover(); r != nil {
 			e, ok := r.(error)
