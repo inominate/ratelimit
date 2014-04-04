@@ -63,6 +63,9 @@ func (rl *RateLimit) countEvents() (eventCount int) {
 		} else {
 			eventCount++
 		}
+		if nextExpire.IsZero() || t.Before(nextExpire) {
+			nextExpire = t
+		}
 	}
 
 	if nextExpire.IsZero() {
@@ -271,9 +274,7 @@ func (rl *RateLimit) Finish(skip bool) (retErr error) {
 	return nil
 }
 
-/*
-Close the rate limiter, cleaning up any resources in use.
-*/
+/* Close the rate limiter, cleaning up any resources in use. */
 func (rl *RateLimit) Close() (retErr error) {
 	// Use recover to avoid panicing the entire program should start be called
 	// on a closed RateLimit.
