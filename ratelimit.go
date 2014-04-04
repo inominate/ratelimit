@@ -34,6 +34,31 @@ var ErrTimeout = errors.New("timeout waiting for clearance to continue")
 var ErrAlreadyClosed = errors.New("already closed")
 
 /*
+NewRateLimit will return a new rate limiter that limits to maxEvents events
+over any given duration of period length.
+
+Note that the number of concurrent tasks running will never exceed maxEvents.
+*/
+func NewRateLimit(maxEvents int, period time.Duration) *RateLimit {
+	var rl RateLimit
+
+	rl.start = make(chan struct{})
+	rl.finish = make(chan bool, maxEvents*2)
+	rl.close = make(chan chan error)
+
+	rl.events = make(map[time.Time]struct{}, maxEvents)
+
+	rl.maxEvents = maxEvents
+	rl.period = period
+
+	rl.activeStart = rl.start
+
+	go rl.run()
+
+	return &rl
+}
+
+/*
 Start should be called at the beginning of a task. It will block as needed in
 order to ensure the rate remains below the specified limit.
 
