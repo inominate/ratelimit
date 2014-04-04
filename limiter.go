@@ -10,7 +10,9 @@ import (
 /* DebugLog be set up with a logger for debugging purposes. */
 var DebugLog = log.New(ioutil.Discard, "", 0)
 
-/* RateLimit should only be created using NewRateLimit() */
+/*
+RateLimit should only be created using NewRateLimit()
+*/
 type RateLimit struct {
 	maxEvents int
 	period    time.Duration

@@ -1,5 +1,5 @@
 /*
-A generic rate limiter for handling concurrent requests.
+Package ratelimit is a generic rate limiter for handling concurrent requests.
 
 Limits the rate at which events can complete while preventing new requests from
 starting that may break that limit.
@@ -27,7 +27,10 @@ import (
 	"time"
 )
 
+// ErrTimeout indicated a timeout when attempting to begin a task.
 var ErrTimeout = errors.New("timeout waiting for clearance to continue")
+
+// ErrAlreadyClosed indicates an attempt to use a closed RateLimit.
 var ErrAlreadyClosed = errors.New("already closed")
 
 /*
@@ -101,7 +104,9 @@ func (rl *RateLimit) Finish(skip bool) (retErr error) {
 	return nil
 }
 
-/* Close the rate limiter, cleaning up any resources in use. */
+/*
+Close the rate limiter, cleaning up any resources in use.
+*/
 func (rl *RateLimit) Close() (retErr error) {
 	// Use recover to avoid panicing the entire program should start be called
 	// on a closed RateLimit.
