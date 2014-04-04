@@ -1,7 +1,24 @@
 /*
-A generic rate limiter.
+A generic rate limiter for handling concurrent requests.
 
-Limits the rate at which events can complete.
+Limits the rate at which events can complete while preventing new requests from
+starting that may break that limit.
+
+Usage is fairly simple:
+
+    // Create a new rate limiter, limit to 10 requests over any given minute.
+    rl := NewRateLimit(10, time.Minute)
+
+Each task must then call Start() to begin, followed by Finish() when it
+completes it's task.
+
+    func task(rl *RateLimit) {
+		rl.Start(0)
+		// Do stuff
+		rl.Finish(false)
+	}
+
+Start() and Finish() must be called exactly once by each task.
 */
 package ratelimit
 
@@ -13,9 +30,10 @@ import (
 	"time"
 )
 
-// Set up a logger that can be turned on for debugging.
+/* DebugLog be set up with a logger for debugging purposes. */
 var DebugLog = log.New(ioutil.Discard, "", 0)
 
+/* RateLimit should only be created using NewRateLimit() */
 type RateLimit struct {
 	maxEvents int
 	period    time.Duration
@@ -45,9 +63,6 @@ func (rl *RateLimit) countEvents() (eventCount int) {
 		} else {
 			eventCount++
 		}
-		if nextExpire.IsZero() || t.Before(nextExpire) {
-			nextExpire = t
-		}
 	}
 
 	if nextExpire.IsZero() {
@@ -65,6 +80,10 @@ func (rl *RateLimit) addEvent() {
 	rl.events[time.Now().Add(rl.period)] = struct{}{}
 }
 
+/*
+run is the main handler, started by NewRateLimit and should never be used
+elsewhere
+*/
 func (rl *RateLimit) run() {
 runLoop:
 	for {
@@ -88,6 +107,7 @@ runLoop:
 	DebugLog.Printf("Worker cleanup complete, shutting down.")
 }
 
+/*  runExpire is used by run to expire events on a timer. */
 func (rl *RateLimit) runExpire() {
 	count := rl.countEvents()
 	DebugLog.Printf("Expired events, have %d events remaining.", count)
@@ -98,6 +118,7 @@ func (rl *RateLimit) runExpire() {
 	}
 }
 
+/* runFinish is used by run to handle the completion of a task, marking an event */
 func (rl *RateLimit) runFinish(skip bool) {
 	count := rl.countEvents()
 
@@ -123,13 +144,14 @@ func (rl *RateLimit) runFinish(skip bool) {
 	}
 }
 
+/* runStart is used by run to handle the beginning of an event. */
 func (rl *RateLimit) runStart() {
 	count := len(rl.events)
 
 	rl.outstanding++
 	if rl.outstanding+count == rl.maxEvents {
 		// Stop listening for start requests causing new ones to block until
-		// some existing tasks finish.
+		// some existing events finish.
 		rl.activeStart = nil
 
 		DebugLog.Printf("New requests could break error limit, slowing down.")
@@ -138,6 +160,7 @@ func (rl *RateLimit) runStart() {
 	}
 }
 
+/* runClose is used by run to handle the dirty work of shutting down */
 func (rl *RateLimit) runClose(respChan chan error) {
 	close(rl.close)
 	close(rl.start)
@@ -151,6 +174,10 @@ func (rl *RateLimit) runClose(respChan chan error) {
 	respChan <- err
 }
 
+/*
+NewRateLimit will return a new rate limiter that limits to maxEvents events
+over any given duration of period length.
+*/
 func NewRateLimit(maxEvents int, period time.Duration) *RateLimit {
 	var rl RateLimit
 
@@ -173,6 +200,14 @@ func NewRateLimit(maxEvents int, period time.Duration) *RateLimit {
 var ErrTimeout = errors.New("timeout waiting for clearance to continue")
 var ErrAlreadyClosed = errors.New("already closed")
 
+/*
+Start should be called at the beginning of a task. It will block as needed in
+order to ensure the rate remains below the specified limit.
+
+A timeout can be specified which will cause Start to return ErrTimeout if the
+task is not allowed to begin within that time.  A timeout of 0 will never
+time out.
+*/
 func (rl *RateLimit) Start(timeout time.Duration) (retErr error) {
 	// Use recover to avoid panicing the entire program should start be called
 	// on a closed RateLimit.
@@ -205,6 +240,12 @@ func (rl *RateLimit) Start(timeout time.Duration) (retErr error) {
 	}
 }
 
+/*
+Finish is used by a task to signal its completion. It will never block.
+
+skip is used to determine whether or not this task will mark an event. If skip
+is true, the event will not count towards the rate limiting.
+*/
 func (rl *RateLimit) Finish(skip bool) (retErr error) {
 	// Use recover to avoid panicing the entire program should start be called
 	// on a closed RateLimit.
@@ -230,6 +271,9 @@ func (rl *RateLimit) Finish(skip bool) (retErr error) {
 	return nil
 }
 
+/*
+Close the rate limiter, cleaning up any resources in use.
+*/
 func (rl *RateLimit) Close() (retErr error) {
 	// Use recover to avoid panicing the entire program should start be called
 	// on a closed RateLimit.
