@@ -10,15 +10,15 @@ Usage is fairly simple:
     rl := NewRateLimit(10, time.Minute)
 
 Each task must then call Start() to begin, followed by Finish() when it
-completes it's task.
+completes it's task. Start() and Finish() must be called exactly once by each
+task.
 
     func task(rl *RateLimit) {
-		rl.Start(0)
-		// Do stuff
-		rl.Finish(false)
-	}
+        rl.Start(0)
+        // Do stuff
+        rl.Finish(false)
+    }
 
-Start() and Finish() must be called exactly once by each task.
 */
 package ratelimit
 
