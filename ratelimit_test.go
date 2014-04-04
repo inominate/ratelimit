@@ -1,6 +1,8 @@
 package ratelimit
 
 import (
+	"log"
+	"os"
 	"testing"
 	"time"
 )
@@ -239,5 +241,5 @@ func Test_Speculate(t *testing.T) {
 }
 
 func init() {
-	//	DebugLog = log.New(os.Stdout, "ratelimit	", log.LstdFlags|log.Lshortfile)
+	DebugLog = log.New(os.Stdout, "ratelimit	", log.LstdFlags|log.Lshortfile)
 }
