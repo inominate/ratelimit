@@ -45,9 +45,9 @@ func NewRateLimit(maxEvents int, period time.Duration) *RateLimit {
 	rl.start = make(chan struct{})
 	rl.finish = make(chan bool, maxEvents*2)
 	rl.close = make(chan chan error)
-	rl.count = make(chan chan int)
+	rl.countReq = make(chan chan int)
 
-	rl.events = make(map[time.Time]struct{}, maxEvents)
+	rl.expires = make([]time.Time, maxEvents)
 
 	rl.maxEvents = maxEvents
 	rl.period = period
@@ -179,7 +179,7 @@ func (rl *RateLimit) Count() int {
 	*/
 	respChan := make(chan int)
 
-	rl.count <- respChan
+	rl.countReq <- respChan
 	count := <-respChan
 
 	return count

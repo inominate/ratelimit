@@ -10,6 +10,8 @@ import (
 /* DebugLog be set up with a logger for debugging purposes. */
 var DebugLog = log.New(ioutil.Discard, "", 0)
 
+//var DebugLog = log.New(os.Stdout, "DEBUG", log.Lshortfile|log.Ltime)
+
 /*
 RateLimit should only be created using NewRateLimit()
 */
@@ -19,49 +21,20 @@ type RateLimit struct {
 
 	outstanding  int
 	expireEvents <-chan time.Time
-	events       map[time.Time]struct{}
 	nextExpire   time.Time
+
+	expires []time.Time
+	idx     int
+	count   int
 
 	// activeStart is what we nil out when we need to block new requests
 	activeStart chan struct{}
 
 	// start keeps our real start channel.
-	start  chan struct{}
-	finish chan bool
-	close  chan chan error
-	count  chan chan int
-}
-
-/* countEvents should only ever called by run, dangerous if used elsewhere. */
-func (rl *RateLimit) countEvents() (eventCount int) {
-	var nextExpire time.Time
-	now := time.Now()
-
-	for t := range rl.events {
-		if t.Before(now) {
-			delete(rl.events, t)
-		} else {
-			eventCount++
-
-			if nextExpire.IsZero() || t.Before(nextExpire) {
-				nextExpire = t
-			}
-		}
-	}
-
-	if nextExpire.IsZero() {
-		rl.expireEvents = nil
-	} else if nextExpire != rl.nextExpire {
-		// Don't create new timers unless we actually need to.
-		rl.nextExpire = nextExpire
-		rl.expireEvents = time.After(nextExpire.Sub(now))
-	}
-	return
-}
-
-/* addEvent should only ever called by run, dangerous if used elsewhere. */
-func (rl *RateLimit) addEvent() {
-	rl.events[time.Now().Add(rl.period)] = struct{}{}
+	start    chan struct{}
+	finish   chan bool
+	close    chan chan error
+	countReq chan chan int
 }
 
 /*
@@ -81,8 +54,8 @@ runLoop:
 		case <-rl.activeStart:
 			rl.runStart()
 
-		case respChan := <-rl.count:
-			respChan <- rl.countEvents()
+		case respChan := <-rl.countReq:
+			respChan <- rl.count
 
 		case respChan := <-rl.close:
 			rl.runClose(respChan)
@@ -93,12 +66,53 @@ runLoop:
 	DebugLog.Printf("Worker cleanup complete, shutting down.")
 }
 
+/* addEvent should only ever called by run, dangerous if used elsewhere. */
+func (rl *RateLimit) addEvent() {
+	now := time.Now()
+	rl.expires[rl.idx] = now.Add(rl.period)
+
+	rl.idx++
+	rl.count++
+	if rl.idx >= rl.maxEvents {
+		rl.idx = 0
+	}
+
+	if rl.nextExpire.IsZero() {
+		rl.nextExpire = rl.expires[rl.idx]
+		rl.expireEvents = time.After(rl.period)
+	}
+
+	if rl.count+rl.outstanding >= rl.maxEvents {
+		// Stop listening for new start requests.
+		rl.activeStart = nil
+
+		DebugLog.Printf("Event limit reached, blocking start requests.")
+	}
+}
+
 /*  runExpire is used by run to expire events on a timer. */
 func (rl *RateLimit) runExpire() {
-	count := rl.countEvents()
-	DebugLog.Printf("Expired events, have %d events remaining.", count)
+	now := time.Now()
 
-	if rl.outstanding+count < rl.maxEvents {
+	oldestEvent := rl.idx - rl.count
+	if oldestEvent < 0 {
+		oldestEvent = rl.maxEvents + oldestEvent
+	}
+
+	for now.After(rl.expires[oldestEvent]) && rl.count > 0 {
+
+		rl.count--
+		oldestEvent++
+		if oldestEvent >= rl.maxEvents {
+			oldestEvent = 0
+		}
+	}
+	DebugLog.Printf("Expired events, have %d events remaining.", rl.count)
+
+	rl.nextExpire = rl.expires[oldestEvent]
+	rl.expireEvents = time.After(rl.nextExpire.Sub(now))
+
+	if rl.outstanding+rl.count < rl.maxEvents {
 		DebugLog.Printf("Event limit clear, continuing")
 		rl.activeStart = rl.start
 	}
@@ -106,25 +120,15 @@ func (rl *RateLimit) runExpire() {
 
 /* runFinish is used by run to handle the completion of a task, marking an event */
 func (rl *RateLimit) runFinish(skip bool) {
-	count := rl.countEvents()
-
 	if skip {
 		DebugLog.Printf("Event finished, but going uncounted.")
 	} else {
 		rl.addEvent()
-		count++
-
-		DebugLog.Printf("Event finished, current count is %d.", count)
-		if count >= rl.maxEvents {
-			// Stop listening for new start requests.
-			rl.activeStart = nil
-
-			DebugLog.Printf("Event limit reached, blocking start requests.")
-		}
+		DebugLog.Printf("Event finished, current count is %d.", rl.count)
 	}
 
 	rl.outstanding--
-	if rl.outstanding+count < rl.maxEvents {
+	if rl.outstanding+rl.count < rl.maxEvents {
 		DebugLog.Printf("Event limit clear, accepting new start requests.")
 		rl.activeStart = rl.start
 	}
@@ -132,17 +136,15 @@ func (rl *RateLimit) runFinish(skip bool) {
 
 /* runStart is used by run to handle the beginning of an event. */
 func (rl *RateLimit) runStart() {
-	count := len(rl.events)
-
 	rl.outstanding++
-	if rl.outstanding+count == rl.maxEvents {
+	if rl.outstanding+rl.count == rl.maxEvents {
 		// Stop listening for start requests causing new ones to block until
 		// some existing events finish.
 		rl.activeStart = nil
 
 		DebugLog.Printf("New requests could break error limit, slowing down.")
-	} else if rl.outstanding+count > rl.maxEvents {
-		log.Printf("New requests have broken error limit, this shouldn't happen. %d+%d (%d) > %d", rl.outstanding, count, rl.outstanding+count, rl.maxEvents)
+	} else if rl.outstanding+rl.count > rl.maxEvents {
+		log.Printf("New requests have broken error limit, this shouldn't happen. %d+%d (%d) > %d", rl.outstanding, rl.count, rl.outstanding+rl.count, rl.maxEvents)
 	}
 }
 
@@ -151,7 +153,7 @@ func (rl *RateLimit) runClose(respChan chan error) {
 	close(rl.close)
 	close(rl.start)
 	close(rl.finish)
-	close(rl.count)
+	close(rl.countReq)
 
 	var err error
 	if rl.outstanding > 0 {
