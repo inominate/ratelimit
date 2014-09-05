@@ -71,15 +71,16 @@ func (rl *RateLimit) addEvent() {
 	now := time.Now()
 	rl.expires[rl.idx] = now.Add(rl.period)
 
+	if rl.nextExpire.IsZero() {
+		rl.nextExpire = rl.expires[rl.idx]
+		rl.expireEvents = time.After(rl.period)
+		DebugLog.Printf("No expire exists, adding for %.2f seconds.", rl.period.Seconds())
+	}
+
 	rl.idx++
 	rl.count++
 	if rl.idx >= rl.maxEvents {
 		rl.idx = 0
-	}
-
-	if rl.nextExpire.IsZero() {
-		rl.nextExpire = rl.expires[rl.idx]
-		rl.expireEvents = time.After(rl.period)
 	}
 
 	if rl.count+rl.outstanding >= rl.maxEvents {
@@ -99,20 +100,46 @@ func (rl *RateLimit) runExpire() {
 		oldestEvent = rl.maxEvents + oldestEvent
 	}
 
-	for now.After(rl.expires[oldestEvent]) && rl.count > 0 {
+	DebugLog.Printf("Expiring events, have %d events.", rl.count)
+
+	var next int
+	for rl.count > 0 {
+		next = oldestEvent + 1
+		if next >= rl.maxEvents {
+			next = 0
+		}
 
 		rl.count--
-		oldestEvent++
-		if oldestEvent >= rl.maxEvents {
-			oldestEvent = 0
+		oldestEvent = next
+
+		if rl.expires[next].After(now) {
+			break
 		}
+
 	}
-	DebugLog.Printf("Expired events, have %d events remaining.", rl.count)
+	/*
+		DebugLog.Printf("Expired events, have %d events remaining as of %s", rl.count, now.Format(time.StampMilli))
 
-	rl.nextExpire = rl.expires[oldestEvent]
-	rl.expireEvents = time.After(rl.nextExpire.Sub(now))
+		for i := 0; i < rl.maxEvents; i++ {
+			str := ""
+			if i == oldestEvent {
+				str = "Oldest "
+			}
 
-	if rl.outstanding+rl.count < rl.maxEvents {
+			DebugLog.Printf("%sEvent %d: %s", str, i, rl.expires[i].Format(time.StampMilli))
+		}
+		time.Sleep(100 * time.Millisecond)
+	*/
+	if rl.count == 0 {
+		DebugLog.Printf("No events left. Going to sleep.")
+		rl.nextExpire = time.Time{}
+	} else {
+		rl.nextExpire = rl.expires[oldestEvent]
+		rl.expireEvents = time.After(rl.nextExpire.Sub(now))
+		DebugLog.Printf("Waiting until %s", rl.nextExpire.Format(time.StampMilli))
+	}
+
+	if rl.activeStart == nil && rl.outstanding+rl.count < rl.maxEvents {
 		DebugLog.Printf("Event limit clear, continuing")
 		rl.activeStart = rl.start
 	}
@@ -128,7 +155,7 @@ func (rl *RateLimit) runFinish(skip bool) {
 	}
 
 	rl.outstanding--
-	if rl.outstanding+rl.count < rl.maxEvents {
+	if rl.activeStart == nil && rl.outstanding+rl.count < rl.maxEvents {
 		DebugLog.Printf("Event limit clear, accepting new start requests.")
 		rl.activeStart = rl.start
 	}
