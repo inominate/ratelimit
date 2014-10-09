@@ -29,7 +29,7 @@ func TaskError(t *testing.T, e *RateLimit, id int, timeout time.Duration, taskLe
 
 	err := e.Start(timeout)
 	if err != nil {
-		t.Logf("Clean task %d failed to start: %s", id, err)
+		t.Logf("Error task %d failed to start: %s", id, err)
 		return true
 	}
 
@@ -138,11 +138,11 @@ func Test_Outstanding(t *testing.T) {
 	taskLength := 10 * time.Millisecond
 
 	successChan := make(chan bool)
-	timeout := time.After(2 * time.Second)
+	timeout := time.After(3 * time.Second)
 	go func() {
 		// Fill our rate limit
-		for i := 1; i <= 5; i++ {
-			go TaskError(t, et, i, 0, taskLength)
+		for i := 1; i <= 30; i++ {
+			go TaskError(t, et, i, 10*time.Millisecond, taskLength)
 		}
 		time.Sleep(10 * time.Millisecond)
 
@@ -150,21 +150,24 @@ func Test_Outstanding(t *testing.T) {
 		if outstanding != 5 {
 			t.Errorf("Unexpected outstanding, expected 5: %d", outstanding)
 		}
-		t.Logf("Outstanding: %d", outstanding)
+		t.Logf("Outstanding: %d Count: %d", et.Outstanding(), et.Count())
 
 		// Create full outstanding queue
-		for i := 1; i <= 10; i++ {
-			go TaskClean(t, et, i, 10*time.Millisecond, taskLength)
+		for i := 1; i <= 30; i++ {
+			go TaskClean(t, et, i, 50*time.Millisecond, taskLength)
 		}
-		time.Sleep(5 * time.Millisecond)
+		t.Logf("Outstanding: %d Count: %d", et.Outstanding(), et.Count())
+
+		time.Sleep(10 * time.Millisecond)
 		outstanding = et.Outstanding()
 		if outstanding != 0 {
 			t.Errorf("Unexpected outstanding, expected 0: %d", outstanding)
 		}
-		t.Logf("Outstanding: %d", outstanding)
+		t.Logf("Outstanding: %d Count: %d", et.Outstanding(), et.Count())
 
 		// Wait for tasks to clear.
 		time.Sleep(1 * time.Second)
+		t.Logf("Outstanding: %d Count: %d", et.Outstanding(), et.Count())
 
 		// Try one more.
 		successChan <- TaskClean(t, et, -1, 10*time.Millisecond, taskLength)
