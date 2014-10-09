@@ -105,8 +105,8 @@ func Test_Error(t *testing.T) {
 }
 
 func Test_Timeout(t *testing.T) {
-	et := NewRateLimit(5, 10*time.Second)
-	taskLength := 10 * time.Millisecond
+	et := NewRateLimit(5, 1*time.Second)
+	taskLength := 50 * time.Millisecond
 
 	successChan := make(chan bool)
 	timeout := time.After(time.Second)
@@ -130,6 +130,58 @@ func Test_Timeout(t *testing.T) {
 		t.Errorf("Timeout tasks failed to complete.")
 		return
 	}
+}
+
+func Test_Outstanding(t *testing.T) {
+
+	et := NewRateLimit(5, 1*time.Second)
+	taskLength := 10 * time.Millisecond
+
+	successChan := make(chan bool)
+	timeout := time.After(2 * time.Second)
+	go func() {
+		// Fill our rate limit
+		for i := 1; i <= 5; i++ {
+			go TaskError(t, et, i, 0, taskLength)
+		}
+		time.Sleep(10 * time.Millisecond)
+
+		outstanding := et.Outstanding()
+		if outstanding != 5 {
+			t.Errorf("Unexpected outstanding, expected 5: %d", outstanding)
+		}
+		t.Logf("Outstanding: %d", outstanding)
+
+		// Create full outstanding queue
+		for i := 1; i <= 10; i++ {
+			go TaskClean(t, et, i, 10*time.Millisecond, taskLength)
+		}
+		time.Sleep(5 * time.Millisecond)
+		outstanding = et.Outstanding()
+		if outstanding != 0 {
+			t.Errorf("Unexpected outstanding, expected 0: %d", outstanding)
+		}
+		t.Logf("Outstanding: %d", outstanding)
+
+		// Wait for tasks to clear.
+		time.Sleep(1 * time.Second)
+
+		// Try one more.
+		successChan <- TaskClean(t, et, -1, 10*time.Millisecond, taskLength)
+	}()
+	select {
+	case timedOut := <-successChan:
+		if !timedOut {
+			t.Logf("Outstanding test completed.")
+		} else {
+			t.Errorf("Outstanding tasks blocking continuation.")
+		}
+		return
+	case <-timeout:
+		t.Errorf("Timeout tasks failed to complete.")
+		return
+	}
+
 }
 
 func Test_Close(t *testing.T) {

@@ -46,6 +46,7 @@ func NewRateLimit(maxEvents int, period time.Duration) *RateLimit {
 	rl.finish = make(chan bool, maxEvents*2)
 	rl.close = make(chan chan error)
 	rl.countReq = make(chan chan int)
+	rl.outstandingReq = make(chan chan int)
 
 	rl.expires = make([]time.Time, maxEvents)
 
@@ -162,25 +163,62 @@ func (rl *RateLimit) Close() (retErr error) {
 
 /*
 Count returns the current event count over period currently being tracked.
-Returns a zero if the rate limiter has been closed.
+Returns -1 if the rate limiter has been closed.
 */
-func (rl *RateLimit) Count() int {
+func (rl *RateLimit) Count() (ret int) {
 	// Use recover to avoid panicing the entire program should start be called
-	// on a closed RateLimit. We're just ending up returning 0.
-	/*
-		defer func() {
-			if r := recover(); r != nil {
-				e, ok := r.(error)
-				if !ok || e == nil {
-					panic(r)
-				}
+	// on a closed RateLimit. We're just ending up returning -1.
+	defer func() {
+		if r := recover(); r != nil {
+			e, ok := r.(error)
+			if !ok || e == nil {
+				panic(r)
 			}
-		}()
-	*/
+
+			if e.Error() == "runtime error: send on closed channel" {
+				DebugLog.Printf("Already closed: %s", e)
+				ret = -1
+			} else {
+				DebugLog.Printf("Other Error: %s", e)
+			}
+		}
+	}()
+
 	respChan := make(chan int)
 
 	rl.countReq <- respChan
 	count := <-respChan
 
 	return count
+}
+
+/*
+Outstanding returns the current number of outstanding events.
+Returns a zero if the rate limiter has been closed.
+*/
+func (rl *RateLimit) Outstanding() (ret int) {
+	// Use recover to avoid panicing the entire program should start be called
+	// on a closed RateLimit. We're just ending up returning -1.
+	defer func() {
+		if r := recover(); r != nil {
+			e, ok := r.(error)
+			if !ok || e == nil {
+				panic(r)
+			}
+
+			if e.Error() == "runtime error: send on closed channel" {
+				DebugLog.Printf("Already closed: %s", e)
+				ret = -1
+			} else {
+				DebugLog.Printf("Other Error: %s", e)
+			}
+		}
+	}()
+
+	respChan := make(chan int)
+
+	rl.outstandingReq <- respChan
+	outstanding := <-respChan
+
+	return outstanding
 }

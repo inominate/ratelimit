@@ -31,10 +31,12 @@ type RateLimit struct {
 	activeStart chan struct{}
 
 	// start keeps our real start channel.
-	start    chan struct{}
-	finish   chan bool
-	close    chan chan error
-	countReq chan chan int
+	start  chan struct{}
+	finish chan bool
+	close  chan chan error
+
+	countReq       chan chan int
+	outstandingReq chan chan int
 }
 
 /*
@@ -56,6 +58,9 @@ runLoop:
 
 		case respChan := <-rl.countReq:
 			respChan <- rl.count
+
+		case respChan := <-rl.outstandingReq:
+			respChan <- rl.outstanding
 
 		case respChan := <-rl.close:
 			rl.runClose(respChan)
@@ -181,6 +186,7 @@ func (rl *RateLimit) runClose(respChan chan error) {
 	close(rl.start)
 	close(rl.finish)
 	close(rl.countReq)
+	close(rl.outstandingReq)
 
 	var err error
 	if rl.outstanding > 0 {
